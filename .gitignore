@@ -1,0 +1,7 @@
+makefun-keypair.json
+.makefun/credentials
+node_modules/
+out/
+.env
+*.key
+*.pem
