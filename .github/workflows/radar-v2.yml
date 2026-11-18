@@ -27,6 +27,14 @@ jobs:
           node tools/capture-screenshots.mjs out
           node main.ts --input /tmp/radar-synthetic.json --output out
           node -e "const fs=require('fs');const d=JSON.parse(fs.readFileSync('out/dossier.json'));if(!d.images || d.images.length!==3)process.exit(1);console.log('Dossier images:',d.images.length)"
+      - name: Upload synthetic browser captures for visual QA
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: synthetic-radar-views
+          path: screenshots/*.png
+          if-no-files-found: warn
+          retention-days: 1
       - name: Check no private snapshot or credentials were committed
         shell: bash
         run: |
