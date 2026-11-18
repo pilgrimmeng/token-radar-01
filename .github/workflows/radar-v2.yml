@@ -15,6 +15,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22.18.0
+      - name: Check browser JavaScript syntax
+        run: node --check dashboard/app.js
       - name: TypeScript model smoke tests
         run: node --test tests/smoke.test.ts
       - name: Generate synthetic snapshot and verify model
