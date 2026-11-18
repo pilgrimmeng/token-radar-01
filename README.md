@@ -21,11 +21,12 @@ Run Node.js **22.18 or later**:
 
 ```sh
 node tests/validate-model.ts /absolute/path/to/snapshot.json
-mkdir -p out
-MAKEFUN_OUTPUT_DIR=out node main.ts --input /absolute/path/to/snapshot.json
+node main.ts --prepare --input /absolute/path/to/snapshot.json --output out
+node tools/capture-screenshots.mjs out
+node main.ts --input /absolute/path/to/snapshot.json --output out
 ```
 
-The second command requires **three real screenshots in `screenshots/`** (board, open detail and filtered board). They must be captured in a browser from this exact build. Until they are added, `main.ts` intentionally exits before the dossier is written. Render `out/dashboard/index.html` (with `out/data.js` present) and capture at 1440×900 or another readable viewport; do not use mockups.
+The second command requires **three real screenshots in `screenshots/`** (board, open detail and filtered board). They must be captured in a browser from this exact build. The script captures real Chromium views and refuses blank or duplicate images. Review them visually before committing. Until they are added, `main.ts` intentionally exits before the dossier is written. Render `out/dashboard/index.html` (with `out/data.js` present) and capture at 1440×900 or another readable viewport; do not use mockups.
 
 The snapshot's missing token fields are not proof that an asset is unissued. Verify that no wrapped, staked or companion trading token disqualifies a record. The category plans state scenario costs, not live quotes or guaranteed reward eligibility.
 
