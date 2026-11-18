@@ -168,7 +168,7 @@
     return el('section', { class: 'lede' },
       el('div', null,
         el('h1', { text: DATA.watchlist_size + ' watchlist protocols, ranked by implied value' }),
-        el('p', { text: 'The watchlist covers all ' + DATA.watchlist_size + ' snapshot candidates above  })
+        el('p', { text: 'All ' + DATA.watchlist_size + ' above-floor watchlist candidates are included, with ' + DATA.early_size + ' additional early candidates. Blank token fields are not proof that no asset exists: verify before acting.' })
       ),
       el('div', { class: 'facts' },
         el('div', { class: 'fact' }, el('span', { text: 'Watchlist covered' }), el('b', { text: DATA.watchlist_size + ' / ' + DATA.watchlist_size })),
