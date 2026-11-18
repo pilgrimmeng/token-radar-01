@@ -50,6 +50,13 @@ export interface ModelConstants {
   maturity_range: number;
   maturity_days: number;
   unknown_age_days: number;
+  chain_bonus_per_extra?: number;
+  fitted_intercept?: number;
+  fitted_slope?: number;
+  fitted_categories?: Record<string, number>;
+  comparison_count?: number;
+  cv_median_abs_log_error?: number;
+  baseline_median_abs_log_error?: number;
 }
 
 export const MODEL: ModelConstants = {
@@ -64,7 +71,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-1';
+export const MODEL_VERSION = 'radar-2-calibrated';
 
 /** How many pre-token protocols below the watchlist floor the early radar carries, by TVL. */
 export const EARLY_ROWS = 160;
@@ -120,6 +127,7 @@ export interface RadarRow {
   implied_value_usd: number;
   growth_multiplier: number;
   maturity_multiplier: number;
+  farm_steps: string[];
 }
 
 /** A live-token protocol: it already trades, so the board shows the market's own value, not a model's. */
@@ -180,9 +188,92 @@ export function impliedValue(protocol: SnapshotProtocol, asOf: string, model: Mo
   const growthMult = 1 + (growthPct / 100) * model.growth_weight;
   const ageForModel = age ?? model.unknown_age_days;
   const maturityMult = model.maturity_floor + (Math.min(Math.max(ageForModel, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
-  const base = protocol.tvl_usd * model.base_multiple;
-  const implied = Math.max(1, Math.round(base * growthMult * maturityMult));
+  const offset = model.fitted_categories?.[protocol.category ?? ''] ?? 0;
+  const base = model.fitted_intercept === undefined || model.fitted_slope === undefined
+    ? protocol.tvl_usd * model.base_multiple
+    : Math.exp(model.fitted_intercept + model.fitted_slope * Math.log(Math.max(1, protocol.tvl_usd)) + offset);
+  const chains = Math.min(4, Math.max(0, protocol.chains.length - 1));
+  const chainMult = 1 + chains * (model.chain_bonus_per_extra ?? 0);
+  const implied = Math.max(1, Math.round(base * growthMult * maturityMult * chainMult));
   return { implied, growthPct, growthMult, maturityMult, age };
+}
+
+/**
+ * Calibrate launch-value proxies against the sealed snapshot's already-trading tokens.
+ * The entire operation is deterministic, requires no network, and contains no protocol-name exception.
+ * A traded token is a comparison, NOT a prediction of whether a tokenless protocol will launch.
+ */
+export function calibrateModel(snapshot: Snapshot): ModelConstants {
+  type Comp = { category: string; tvl: number; cap: number };
+  const seen = new Set<string>();
+  const comps: Comp[] = [];
+  for (const p of snapshot.protocols) {
+    if (p.category === 'CEX' || !p.gecko_id || seen.has(p.gecko_id)) continue;
+    if (!(p.tvl_usd > 1_000_000) || !((p.mcap_usd ?? 0) > 100_000)) continue;
+    seen.add(p.gecko_id);
+    comps.push({ category: p.category ?? '', tvl: p.tvl_usd, cap: p.mcap_usd! });
+  }
+  if (comps.length < 20) return { ...MODEL };
+
+  type Fit = { intercept: number; slope: number; offsets: Record<string, number> };
+  function fit(rows: Comp[]): Fit {
+    const xx = rows.map(r => Math.log(r.tvl));
+    const yy = rows.map(r => Math.log(r.cap));
+    const xm = xx.reduce((a,b) => a+b,0) / rows.length;
+    const ym = yy.reduce((a,b) => a+b,0) / rows.length;
+    let cov = 0, variance = 0;
+    for (let i = 0; i < rows.length; i++) {
+      cov += (xx[i]! - xm) * (yy[i]! - ym);
+      variance += (xx[i]! - xm) ** 2;
+    }
+    const slope = Math.min(1.1, Math.max(0.25, cov / Math.max(1e-9, variance)));
+    const intercept = yy.reduce((s,y,i) => s + y - slope * xx[i]!,0) / rows.length;
+    const groups = new Map<string, number[]>();
+    for (const r of rows) {
+      const key = r.category;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(Math.log(r.cap) - intercept - slope * Math.log(r.tvl));
+    }
+    const offsets: Record<string, number> = {};
+    for (const [key, values] of groups) {
+      if (values.length < 4) continue; // insufficient category evidence
+      const mean = values.reduce((a,b) => a+b,0) / values.length;
+      const shrunk = mean * values.length / (values.length + 12);
+      offsets[key] = Math.max(-Math.log(2), Math.min(Math.log(2), shrunk));
+    }
+    return { intercept, slope, offsets };
+  }
+  function predict(r: Comp, f: Fit): number {
+    return f.intercept + f.slope * Math.log(r.tvl) + (f.offsets[r.category] ?? 0);
+  }
+  const fittedErrors: number[] = [], baseErrors: number[] = [];
+  for (let fold = 0; fold < 5; fold++) {
+    const train = comps.filter((_,i) => i % 5 !== fold);
+    const holdout = comps.filter((_,i) => i % 5 === fold);
+    const f = fit(train);
+    for (const r of holdout) {
+      fittedErrors.push(Math.abs(Math.log(r.cap) - predict(r,f)));
+      baseErrors.push(Math.abs(Math.log(r.cap) - Math.log(r.tvl * 0.25)));
+    }
+  }
+  function median(v: number[]): number {
+    const a = v.slice().sort((x,y) => x-y);
+    return a.length % 2 ? a[(a.length-1)/2]! : (a[a.length/2-1]! + a[a.length/2]!) / 2;
+  }
+  const trained = fit(comps);
+  return {
+    ...MODEL,
+    growth_weight: 0.15,
+    maturity_floor: 0.8,
+    maturity_range: 0.2,
+    chain_bonus_per_extra: 0.03,
+    fitted_intercept: trained.intercept,
+    fitted_slope: trained.slope,
+    fitted_categories: trained.offsets,
+    comparison_count: comps.length,
+    cv_median_abs_log_error: Math.round(median(fittedErrors) * 1000) / 1000,
+    baseline_median_abs_log_error: Math.round(median(baseErrors) * 1000) / 1000,
+  };
 }
 
 /** DefiLlama's version-marker rule: a name ending in a release is a pool of another protocol. */
@@ -212,7 +303,7 @@ export interface BoardSummary {
 }
 
 /** The protocols the board ranks, strongest first, with ranks 1..n. */
-export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): BoardRow[] {
+export function buildBoard(snapshot: Snapshot, model: ModelConstants = calibrateModel(snapshot)): BoardRow[] {
   const index = bySlug(snapshot.protocols);
   const chosen = new Map<string, SnapshotProtocol>();
   // The watchlist is the floor: every slug, even one the snapshot no longer carries (it cannot, but the
@@ -314,40 +405,56 @@ function actionFor(p: SnapshotProtocol, capital: number, chain: string): string 
  */
 export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
   const chain = chainOf(p);
+  const name = p.name;
   const capital = capitalFor(p);
   const hold = holdDaysFor(age);
-  const action = actionFor(p, capital, chain);
+  const c = (p.category ?? '').toLowerCase();
+  const isMainnet = /ethereum|bitcoin/i.test(chain);
+  const isSolana = /solana/i.test(chain);
+  const gas = isSolana ? '$0.05–$1' : isMainnet ? '$5–$30' : '$0.20–$5';
+  const setup = isMainnet ? '15–30 minutes' : '10–20 minutes';
+  let activity = '', follow = '', unwind = '';
+  if (/lend|collateral|cdp|borrow/i.test(c)) {
+    activity = `If ${name} supports permissionless deposits on ${chain}, supply up to $${capital} of a supported low-volatility asset; do not borrow or leverage solely to collect possible points.`;
+    follow = `Check ${name}'s official position page for collateral factors, withdrawal limits and whether supplying—not borrowing—is recorded as activity.`;
+    unwind = 'Review utilization, reserve liquidity and any withdrawal queue before redeeming the supplied position.';
+  } else if (/dex|liquidity manager|yield aggregator|leveraged farm/i.test(c)) {
+    activity = `On ${name}'s verified ${chain} interface, compare a small swap with a basic two-asset liquidity position; use up to $${capital} only if the market is liquid.`;
+    follow = 'Record quoted swap impact, pool fees and impermanent-loss exposure; do not open leveraged farms merely to generate activity.';
+    unwind = 'Close the liquidity position, compare both token balances with the starting value and account for slippage before another cycle.';
+  } else if (/bridge/i.test(c)) {
+    activity = `If ${name} is an active bridge, quote a transfer of at most $${capital} from a supported origin to ${chain}; verify both endpoints, minimum and route fee before confirming.`;
+    follow = 'Wait for the destination receipt and verify it independently; do not invent repeat transfers or cycle funds for volume.';
+    unwind = 'Keep the funds on the destination chain unless there is a legitimate reason to return; account for the return bridge fee.';
+  } else if (/rwa|asset|onchain capital allocator|curator|vault/i.test(c)) {
+    activity = `Check whether ${name}'s ${chain} vault is publicly accessible, has minimum deposits or requires KYC; if eligible, consider at most $${capital} only after reading its terms.`;
+    follow = 'Review redemption windows, administrator/custody risks, minimum positions and whether any points program has actually been announced.';
+    unwind = 'Follow the documented redemption schedule; a queue, lockup or permission check can prevent immediate withdrawal.';
+  } else if (/staking|restaking|validator|restak/i.test(c)) {
+    activity = `If ${name} takes native staking assets on ${chain}, compare a small delegated stake with holding the asset outside the protocol before committing up to $${capital}.`;
+    follow = 'Check validator fees, slashing risk, receipt-token liquidity and the unbonding delay; staking is not proof of a future token distribution.';
+    unwind = 'Request unbonding through the verified interface, wait through the chain-defined period and reconcile the final amount.';
+  } else if (/perpetual|derivative|options|prediction/i.test(c)) {
+    activity = `Inspect ${name}'s ${chain} collateral and order requirements; only use a risk-limited action with a predefined maximum loss, not artificial trading volume.`;
+    follow = 'Track commissions, funding, liquidation thresholds and open exposure; if exposure cannot be capped, mark the protocol as skip.';
+    unwind = 'Close open exposure before withdrawing available collateral, allowing for settlement time and commissions.';
+  } else if (/stablecoin|basis trading|synthetic|cdp/i.test(c)) {
+    activity = `Review ${name}'s mint/redeem conditions, collateral quality and peg mechanism on ${chain}; only make a small deposit if redemptions are genuinely available.`;
+    follow = 'Check minting spreads, custody, reserve disclosures and depeg history before leaving any position open.';
+    unwind = 'Redeem through the official mechanism, including any delay or spread; avoid secondary swaps if the exit is illiquid.';
+  } else {
+    activity = `Find ${name}'s verified product documentation for ${chain} and identify a real user action; do not assume every protocol supports deposits or airdrop points.`;
+    follow = 'If there is no accessible onchain action, use a read-only watchlist and mark this candidate skip rather than suggesting a fake transaction.';
+    unwind = 'If funds were deposited, follow the product documentation for recovery, settlement or withdrawal.';
+  }
   return [
-    {
-      text: `Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.`,
-      cost: 'under $3 of gas for the first transaction',
-      time: '5 minutes',
-    },
-    {
-      text: action,
-      cost: `$${capital} of capital and about $${capital >= 150 ? 8 : 4} of gas`,
-      time: '15 minutes to set up',
-    },
-    {
-      text: `Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote.`,
-      cost: 'about $2 of gas a week',
-      time: '10 minutes a week',
-    },
-    {
-      text: `Hold the position for at least ${hold} days so the activity is counted in more than one snapshot.`,
-      cost: `the $${capital} stays in the position`,
-      time: `${hold} days`,
-    },
-    {
-      text: `Before you withdraw, open the protocol's own points or rewards page and claim only from the link it publishes.`,
-      cost: 'no fee to check, and never pay to claim',
-      time: '10 minutes',
-    },
-    {
-      text: `Write the wallet, the dates and every transaction in a farm log so you can repeat the position or unwind it.`,
-      cost: 'nothing but the log',
-      time: '5 minutes',
-    },
+    { text: `Verify the official domain, contract or app linked by ${name}'s own documentation and confirm ${chain} support; ignore unsolicited airdrop links.`, cost: '$0 for review', time: '10–15 minutes' },
+    { text: `Set a personal risk cap for ${name}; reserve up to $${capital} of capital separately from gas. Confirm that any yield, points or future token is not guaranteed.`, cost: `$${capital} maximum at risk, not a nonrefundable fee`, time: '5 minutes' },
+    { text: activity, cost: `scenario gas allowance ${gas} per transaction; live quote required`, time: setup },
+    { text: follow, cost: '$0 to read; extra transactions have separate costs', time: '10–20 minutes' },
+    { text: `Monitor ${name} for ${hold} days only if the original activity has economic value without an airdrop; keep transaction links and check changes once a week.`, cost: `up to $${capital} remains exposed; opportunity cost is not estimated`, time: `${hold} calendar days, 5 minutes weekly` },
+    { text: unwind, cost: `estimate another ${gas} in gas plus any protocol spread`, time: '15 minutes to multiple days, depending on protocol' },
+    { text: `Record ${name}'s actual fees, net cash result and any official eligibility announcement; do not represent speculative points as earned rewards.`, cost: '$0 for record-keeping', time: '10 minutes' }
   ];
 }
 
@@ -384,11 +491,12 @@ export function radarRow(row: BoardRow): RadarRow {
     implied_value_usd: row.implied_value_usd,
     growth_multiplier: row.model.growth_multiplier,
     maturity_multiplier: row.model.maturity_multiplier,
+    farm_steps: row.farm_steps,
   };
 }
 
 /** Everything the dashboard renders, from the snapshot. */
-export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData } {
+export function buildRadar(snapshot: Snapshot, model: ModelConstants = calibrateModel(snapshot)): { board: BoardRow[]; radar: RadarData } {
   const board = buildBoard(snapshot, model);
   const live = liveRows(snapshot);
   const early = board.filter((r) => !snapshot.watchlist.includes(r.slug)).length;
