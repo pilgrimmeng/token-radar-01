@@ -47,7 +47,7 @@ for (const [file,url] of screens) {
   const domCmd = cmd.filter(arg => !arg.startsWith('--screenshot='));
   domCmd.unshift('--dump-dom');
   const dom = spawnSync(chrome, domCmd, {encoding:'utf8',timeout:30000});
-  if (dom.status !== 0 || !dom.stdout.includes('Pre-token rows scored')) throw new Error('Page did not render live board: '+file+' '+String(dom.stderr).slice(0,250));
+  if (dom.status !== 0 || !dom.stdout.includes('Pre-token rows scored')) throw new Error('Page did not render live board: '+file+' HTML '+String(dom.stdout).slice(0,1200)+' STDERR '+String(dom.stderr).slice(-1200));
   const run = spawnSync(chrome,cmd,{encoding:'utf8',timeout:30000});
   if (run.status !== 0) throw new Error('Capture failed: '+file+' '+String(run.stderr).slice(0,700));
   const size=statSync(resolve(dir,file)).size;
