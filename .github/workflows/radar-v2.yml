@@ -17,6 +17,16 @@ jobs:
           node-version: 22.18.0
       - name: TypeScript model smoke tests
         run: node --test tests/smoke.test.ts
+      - name: Generate synthetic snapshot and verify model
+        run: |
+          node tests/create-fixture.mjs /tmp/radar-synthetic.json
+          node tests/validate-model.ts /tmp/radar-synthetic.json
+      - name: Prepare, capture browser screenshots, and build final dossier
+        run: |
+          node main.ts --prepare --input /tmp/radar-synthetic.json --output out
+          node tools/capture-screenshots.mjs out
+          node main.ts --input /tmp/radar-synthetic.json --output out
+          node -e "const fs=require('fs');const d=JSON.parse(fs.readFileSync('out/dossier.json'));if(!d.images || d.images.length!==3)process.exit(1);console.log('Dossier images:',d.images.length)"
       - name: Check no private snapshot or credentials were committed
         shell: bash
         run: |
