@@ -28,7 +28,7 @@ node main.ts --input /absolute/path/to/snapshot.json --output out
 
 The second command requires **three real screenshots in `screenshots/`** (board, open detail and filtered board). They must be captured in a browser from this exact build. The script captures real Chromium views and refuses blank or duplicate images. Review them visually before committing. Until they are added, `main.ts` intentionally exits before the dossier is written. Render `out/dashboard/index.html` (with `out/data.js` present) and capture at 1440×900 or another readable viewport; do not use mockups.
 
-The snapshot's missing token fields are not proof that an asset is unissued. Verify that no wrapped, staked or companion trading token disqualifies a record. The category plans state scenario costs, not live quotes or guaranteed reward eligibility.
+The board reports the snapshot-based estimate separately from evidence about issued assets, product shares, points and rewards. Participation plans cite reviewed product terms and flag unverified fees, access and exit conditions.
 
 ## Entry provenance / submission
 

@@ -41,3 +41,27 @@ test('fit uses traded comparables and improves holdout error on known synthetic 
   assert.ok(Math.abs((m.fitted_slope??0)-0.462)<0.12);
   assert.equal(MODEL.base_multiple,0.25); // the benchmark is immutable
 });
+
+test('chain normalization preserves the score for equivalent chain names', () => {
+  const input = sample();
+  const protocol = input.protocols.find(p => p.slug === input.watchlist[0])!;
+  const model = calibrateModel(input);
+  const expected = impliedValue(protocol, input.as_of, model);
+  assert.deepEqual(impliedValue({ ...protocol, chains: ['Ethereum', 'Base', ' ethereum ', 'BASE', ''] }, input.as_of, model), expected);
+});
+
+test('known and unverified routes use the same evidence and steps in board and dashboard', () => {
+  const input = sample();
+  input.protocols.find(p => p.slug === input.watchlist[0])!.slug = 'hive-protocol';
+  input.watchlist[0] = 'hive-protocol';
+  const { board, radar } = buildRadar(input);
+  const hive = board.find(row => row.slug === 'hive-protocol')!;
+  const detail = radar.rows.find(row => row.slug === hive.slug)!;
+  assert.match(hive.token_status, /B² Hive BTC staking.*B2 rewards/);
+  assert.equal(detail.token_status, hive.token_status);
+  assert.deepEqual(detail.token_evidence, hive.token_evidence);
+  assert.deepEqual(detail.farm_steps, hive.farm_steps);
+  assert.match(hive.farm_steps.join(' '), /BTC-specific fees.*unverified/);
+  assert.match(board.find(row => row.slug === 'watch-1')!.farm_steps.join(' '), /Costs and timing are unverified/);
+  assert.ok(board.every(row => row.farm_steps.every(step => !/\$\d|\d+ calendar days/.test(step))));
+});

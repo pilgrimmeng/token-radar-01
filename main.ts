@@ -73,12 +73,12 @@ copyFiles(join(here, 'dashboard'), join(out, 'dashboard'));
 if (process.argv.includes('--prepare')) {
   // Development: generate board/data and the actual dashboard before taking browser captures.
   // This mode cannot produce a competition entry; use the normal run for final dossier.
-  process.stdout.write(`token radar: prepared ${board.length} rows and dashboard in ${out}; capture 3 real screenshots, then run again without --prepare\\n`);
+  process.stdout.write(`token radar: prepared ${board.length} rows and dashboard in ${out}; capture 3 real screenshots, then run again without --prepare\n`);
   process.exit(0);
 }
 const shots = copyFiles(join(here, 'screenshots'), join(out, 'screenshots'));
-if (shots.length < 3) {
-  process.stderr.write(`token radar: screenshots/ holds ${shots.length} image${shots.length === 1 ? '' : 's'}: hand in 3, the board, a detail view and a filtered view\n`);
+if (shots.length < 3 || shots.length > SCREENSHOT_CAPS.max) {
+  process.stderr.write(`token radar: screenshots/ holds ${shots.length} files: expected 3 to ${SCREENSHOT_CAPS.max} images (board, detail and filtered views are required)\n`);
   process.exit(1);
 }
 for (const name of shots) {

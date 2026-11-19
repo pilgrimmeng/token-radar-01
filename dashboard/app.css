@@ -126,7 +126,6 @@ tbody tr[data-selected="true"] { background: color-mix(in srgb, var(--accent) 8%
 .steps { margin: 0; padding-left: var(--step-5); display: grid; gap: var(--step-3); }
 .steps li { padding-left: var(--step-1); }
 .steps b { display: block; font-weight: 500; }
-.cost { color: var(--muted); font-size: 12px; font-family: var(--font-num); }
 
 @media (max-width: 900px) {
   .shell { padding: var(--step-4); }
@@ -190,3 +189,4 @@ tbody tr[data-selected="true"] { background: #1c5346; }
   .controls .field { width: 100%; }
   .controls .field input, .controls .field select { width: 100%; }
 }
+.evidence { overflow-wrap: anywhere; }

@@ -17,6 +17,14 @@
 // The constants are the house model's, stated in the dashboard and changeable in the model sandbox. No
 // protocol name is ever special-cased: the same function scores every row.
 
+import { EVIDENCE_DATE, PROTOCOL_EVIDENCE } from './protocol-evidence.ts';
+
+interface TokenEvidence {
+  label: string;
+  sources: string[];
+  reviewed_on: string;
+}
+
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
   slug: string;
@@ -79,13 +87,6 @@ export const EARLY_ROWS = 160;
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
 
-/** A farm step: the action, what it costs, and how long it takes. */
-export interface FarmStep {
-  text: string;
-  cost: string;
-  time: string;
-}
-
 /** One row of board.json: the ranked board's row. */
 export interface BoardRow {
   rank: number;
@@ -99,7 +100,8 @@ export interface BoardRow {
   listed_at: string | null;
   gecko_id: string | null;
   symbol: string | null;
-  token_status: 'pre-token';
+  token_status: string;
+  token_evidence?: TokenEvidence;
   age_days: number | null;
   implied_value_usd: number;
   model: {
@@ -112,7 +114,7 @@ export interface BoardRow {
   farm_steps: string[];
 }
 
-/** The dashboard's compact view of one row, with farm plans generated in the page. */
+/** The dashboard's compact view of one row, including the board's participation plan. */
 export interface RadarRow {
   rank: number;
   slug: string;
@@ -127,6 +129,8 @@ export interface RadarRow {
   implied_value_usd: number;
   growth_multiplier: number;
   maturity_multiplier: number;
+  token_status: string;
+  token_evidence?: TokenEvidence;
   farm_steps: string[];
 }
 
@@ -192,7 +196,8 @@ export function impliedValue(protocol: SnapshotProtocol, asOf: string, model: Mo
   const base = model.fitted_intercept === undefined || model.fitted_slope === undefined
     ? protocol.tvl_usd * model.base_multiple
     : Math.exp(model.fitted_intercept + model.fitted_slope * Math.log(Math.max(1, protocol.tvl_usd)) + offset);
-  const chains = Math.min(4, Math.max(0, protocol.chains.length - 1));
+  const uniqueChains = new Set(protocol.chains.map(chain => chain.trim().toLowerCase()).filter(Boolean));
+  const chains = Math.min(4, Math.max(0, uniqueChains.size - 1));
   const chainMult = 1 + chains * (model.chain_bonus_per_extra ?? 0);
   const implied = Math.max(1, Math.round(base * growthMult * maturityMult * chainMult));
   return { implied, growthPct, growthMult, maturityMult, age };
@@ -337,7 +342,10 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = calibrate
     listed_at: s.p.listed_at,
     gecko_id: s.p.gecko_id,
     symbol: s.p.symbol,
-    token_status: 'pre-token',
+    token_status: PROTOCOL_EVIDENCE[s.p.slug]?.status ?? (isPreToken(s.p)
+      ? 'No token recorded in the snapshot. Current product and token identity are unverified.'
+      : 'The snapshot records a token. Its relationship to this protocol is unverified.'),
+    token_evidence: tokenEvidence(s.p.slug),
     age_days: s.age,
     implied_value_usd: s.implied,
     model: {
@@ -347,114 +355,26 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = calibrate
       maturity_multiplier: round4(s.maturityMult),
       age_days: s.age,
     },
-    farm_steps: farmSteps(s.p, s.age).map(stepText),
+    farm_steps: farmSteps(s.p),
   }));
 }
 
 const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
 
-/** A step as one string: its action, then its cost and time, within the gate's 20..600 characters. */
-export function stepText(step: FarmStep): string {
-  let s = `${step.text} Cost: ${step.cost}. Time: ${step.time}.`;
-  if (s.length > 600) s = `${s.slice(0, 596)}...`;
-  if (s.length < 20) s = `${s} Hold the position and check the protocol's own page.`;
-  return s;
+function tokenEvidence(slug: string): TokenEvidence | undefined {
+  const evidence = PROTOCOL_EVIDENCE[slug];
+  if (!evidence) return undefined;
+  return { label: evidence.label, sources: evidence.sources, reviewed_on: EVIDENCE_DATE };
 }
 
-/** The first chain a protocol names, or a neutral phrase. */
-function chainOf(p: SnapshotProtocol): string {
-  return p.chains.length > 0 ? p.chains[0]! : 'its main chain';
-}
-
-/** How much capital one farm position needs, from the protocol's own TVL. */
-function capitalFor(p: SnapshotProtocol): number {
-  if (p.tvl_usd >= 5_000_000_000) return 250;
-  if (p.tvl_usd >= 1_000_000_000) return 150;
-  if (p.tvl_usd >= 100_000_000) return 100;
-  return 50;
-}
-
-/** How long to hold, from the protocol's age: younger protocols get a longer qualifying window. */
-function holdDaysFor(age: number | null): number {
-  if (age === null) return 30;
-  if (age < 180) return 60;
-  if (age < 365) return 45;
-  return 30;
-}
-
-/** The category's one action, in the words a farmer can follow. */
-function actionFor(p: SnapshotProtocol, capital: number, chain: string): string {
-  const c = (p.category ?? '').toLowerCase();
-  const name = p.name;
-  if (c.includes('lend') || c.includes('cdp') || c.includes('collateral')) return `Supply $${capital} of USDC to ${name} on ${chain} and keep the position open.`;
-  if (c.includes('dex') || c.includes('yield') || c.includes('leveraged farm')) return `Provide $${capital} of liquidity to ${name}'s main pool on ${chain} and keep the position open.`;
-  if (c.includes('bridge')) return `Bridge $${capital} of USDC to ${chain} through ${name} and use the bridged funds in its app.`;
-  if (c.includes('staking') || c.includes('restak')) return `Stake $${capital} of the chain's staking asset through ${name} and keep the receipt.`;
-  if (c.includes('perpetual') || c.includes('derivative')) return `Deposit $${capital} of USDC as margin on ${name} and open one small hedge.`;
-  if (c.includes('prediction')) return `Fund $${capital} and place one market position on ${name}.`;
-  if (c.includes('curator') || c.includes('allocator')) return `Deposit $${capital} into a ${name} vault on ${chain} and keep the shares.`;
-  if (c.includes('stable')) return `Mint or deposit $${capital} of the stable asset through ${name} on ${chain}.`;
-  if (c.includes('rwa')) return `Mint $${capital} of the protocol's yield asset on ${chain} and hold it.`;
-  if (c.includes('insurance')) return `Buy $${capital} of cover from ${name} on ${chain} and keep the policy.`;
-  return `Deposit $${capital} of USDC into ${name} on ${chain} and keep the position open.`;
-}
-
-/**
- * A protocol's farm plan: six steps, each an action with a cost and a time. The plan is derived from
- * the protocol's own record (category, chains, TVL, age), never from a hand-written list of names.
- */
-export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
-  const chain = chainOf(p);
-  const name = p.name;
-  const capital = capitalFor(p);
-  const hold = holdDaysFor(age);
-  const c = (p.category ?? '').toLowerCase();
-  const isMainnet = /ethereum|bitcoin/i.test(chain);
-  const isSolana = /solana/i.test(chain);
-  const gas = isSolana ? '$0.05–$1' : isMainnet ? '$5–$30' : '$0.20–$5';
-  const setup = isMainnet ? '15–30 minutes' : '10–20 minutes';
-  let activity = '', follow = '', unwind = '';
-  if (/lend|collateral|cdp|borrow/i.test(c)) {
-    activity = `If ${name} supports permissionless deposits on ${chain}, supply up to $${capital} of a supported low-volatility asset; do not borrow or leverage solely to collect possible points.`;
-    follow = `Check ${name}'s official position page for collateral factors, withdrawal limits and whether supplying—not borrowing—is recorded as activity.`;
-    unwind = 'Review utilization, reserve liquidity and any withdrawal queue before redeeming the supplied position.';
-  } else if (/dex|liquidity manager|yield aggregator|leveraged farm/i.test(c)) {
-    activity = `On ${name}'s verified ${chain} interface, compare a small swap with a basic two-asset liquidity position; use up to $${capital} only if the market is liquid.`;
-    follow = 'Record quoted swap impact, pool fees and impermanent-loss exposure; do not open leveraged farms merely to generate activity.';
-    unwind = 'Close the liquidity position, compare both token balances with the starting value and account for slippage before another cycle.';
-  } else if (/bridge/i.test(c)) {
-    activity = `If ${name} is an active bridge, quote a transfer of at most $${capital} from a supported origin to ${chain}; verify both endpoints, minimum and route fee before confirming.`;
-    follow = 'Wait for the destination receipt and verify it independently; do not invent repeat transfers or cycle funds for volume.';
-    unwind = 'Keep the funds on the destination chain unless there is a legitimate reason to return; account for the return bridge fee.';
-  } else if (/rwa|asset|onchain capital allocator|curator|vault/i.test(c)) {
-    activity = `Check whether ${name}'s ${chain} vault is publicly accessible, has minimum deposits or requires KYC; if eligible, consider at most $${capital} only after reading its terms.`;
-    follow = 'Review redemption windows, administrator/custody risks, minimum positions and whether any points program has actually been announced.';
-    unwind = 'Follow the documented redemption schedule; a queue, lockup or permission check can prevent immediate withdrawal.';
-  } else if (/staking|restaking|validator|restak/i.test(c)) {
-    activity = `If ${name} takes native staking assets on ${chain}, compare a small delegated stake with holding the asset outside the protocol before committing up to $${capital}.`;
-    follow = 'Check validator fees, slashing risk, receipt-token liquidity and the unbonding delay; staking is not proof of a future token distribution.';
-    unwind = 'Request unbonding through the verified interface, wait through the chain-defined period and reconcile the final amount.';
-  } else if (/perpetual|derivative|options|prediction/i.test(c)) {
-    activity = `Inspect ${name}'s ${chain} collateral and order requirements; only use a risk-limited action with a predefined maximum loss, not artificial trading volume.`;
-    follow = 'Track commissions, funding, liquidation thresholds and open exposure; if exposure cannot be capped, mark the protocol as skip.';
-    unwind = 'Close open exposure before withdrawing available collateral, allowing for settlement time and commissions.';
-  } else if (/stablecoin|basis trading|synthetic|cdp/i.test(c)) {
-    activity = `Review ${name}'s mint/redeem conditions, collateral quality and peg mechanism on ${chain}; only make a small deposit if redemptions are genuinely available.`;
-    follow = 'Check minting spreads, custody, reserve disclosures and depeg history before leaving any position open.';
-    unwind = 'Redeem through the official mechanism, including any delay or spread; avoid secondary swaps if the exit is illiquid.';
-  } else {
-    activity = `Find ${name}'s verified product documentation for ${chain} and identify a real user action; do not assume every protocol supports deposits or airdrop points.`;
-    follow = 'If there is no accessible onchain action, use a read-only watchlist and mark this candidate skip rather than suggesting a fake transaction.';
-    unwind = 'If funds were deposited, follow the product documentation for recovery, settlement or withdrawal.';
-  }
+/** Research and participation steps without assumed capital, fees or qualifying periods. */
+function farmSteps(protocol: SnapshotProtocol): string[] {
+  const evidence = PROTOCOL_EVIDENCE[protocol.slug];
+  if (evidence) return evidence.steps;
   return [
-    { text: `Verify the official domain, contract or app linked by ${name}'s own documentation and confirm ${chain} support; ignore unsolicited airdrop links.`, cost: '$0 for review', time: '10–15 minutes' },
-    { text: `Set a personal risk cap for ${name}; reserve up to $${capital} of capital separately from gas. Confirm that any yield, points or future token is not guaranteed.`, cost: `$${capital} maximum at risk, not a nonrefundable fee`, time: '5 minutes' },
-    { text: activity, cost: `scenario gas allowance ${gas} per transaction; live quote required`, time: setup },
-    { text: follow, cost: '$0 to read; extra transactions have separate costs', time: '10–20 minutes' },
-    { text: `Monitor ${name} for ${hold} days only if the original activity has economic value without an airdrop; keep transaction links and check changes once a week.`, cost: `up to $${capital} remains exposed; opportunity cost is not estimated`, time: `${hold} calendar days, 5 minutes weekly` },
-    { text: unwind, cost: `estimate another ${gas} in gas plus any protocol spread`, time: '15 minutes to multiple days, depending on protocol' },
-    { text: `Record ${name}'s actual fees, net cash result and any official eligibility announcement; do not represent speculative points as earned rewards.`, cost: '$0 for record-keeping', time: '10 minutes' }
+    'Locate the official product listing and verify its network, accepted assets and whether it serves individual users.',
+    'Confirm eligibility, any minimum, network and product fees, and the withdrawal process for the exact route. Costs and timing are unverified here.',
+    'Check official incentive terms separately. If access, cost or exit terms remain unclear, keep the protocol on a research watchlist.',
   ];
 }
 
@@ -491,6 +411,8 @@ export function radarRow(row: BoardRow): RadarRow {
     implied_value_usd: row.implied_value_usd,
     growth_multiplier: row.model.growth_multiplier,
     maturity_multiplier: row.model.maturity_multiplier,
+    token_status: row.token_status,
+    token_evidence: row.token_evidence,
     farm_steps: row.farm_steps,
   };
 }

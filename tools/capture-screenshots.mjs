@@ -20,8 +20,8 @@ if (!Array.isArray(board) || board.length < 100) throw new Error('Missing usable
 const counts = new Map();
 for (const r of board) counts.set(r.category || 'Other', (counts.get(r.category || 'Other') || 0) + 1);
 const category = [...counts].sort((a,b) => b[1]-a[1])[0]?.[0] || 'Other';
-const chromeBins = [process.env.CHROME_BIN, 'google-chrome', 'chromium', 'chromium-browser', '/usr/bin/chromium'].filter(Boolean);
-const chrome = chromeBins.find(bin => {
+const chromeBins = ['google-chrome', 'chromium', 'chromium-browser', '/usr/bin/chromium'];
+const chrome = process.env.CHROME_BIN || chromeBins.find(bin => {
   const r = spawnSync(bin, ['--version'], {encoding: 'utf8', timeout: 5000});
   return r.status === 0;
 });
@@ -29,9 +29,10 @@ if (!chrome) throw new Error('Install Chrome/Chromium or set CHROME_BIN');
 const base = pathToFileURL(page).href;
 const dir = resolve('screenshots');
 mkdirSync(dir, {recursive:true});
+const detailRow = board.find(row => row.slug === 'onre') ?? board[0];
 const screens = [
   ['01-board.png', base],
-  ['02-detail.png', base + '#'+new URLSearchParams({p: board[0].slug})],
+  ['02-detail.png', base + '#'+new URLSearchParams({p: detailRow.slug})],
   ['03-filter.png', base + '#'+new URLSearchParams({category})],
 ];
 const hashes = [];
@@ -47,7 +48,7 @@ for (const [file,url] of screens) {
   const domCmd = cmd.filter(arg => !arg.startsWith('--screenshot='));
   domCmd.unshift('--dump-dom');
   const dom = spawnSync(chrome, domCmd, {encoding:'utf8',timeout:30000});
-  if (dom.status !== 0 || !dom.stdout.includes('Pre-token rows scored')) throw new Error('Page did not render live board: '+file+' HTML '+String(dom.stdout).slice(0,1200)+' STDERR '+String(dom.stderr).slice(-1200));
+  if (dom.status !== 0 || !dom.stdout.includes('Ranked rows')) throw new Error('Page did not render live board: '+file+' HTML '+String(dom.stdout).slice(0,1200)+' STDERR '+String(dom.stderr).slice(-1200));
   const run = spawnSync(chrome,cmd,{encoding:'utf8',timeout:30000});
   if (run.status !== 0) throw new Error('Capture failed: '+file+' '+String(run.stderr).slice(0,700));
   const size=statSync(resolve(dir,file)).size;
