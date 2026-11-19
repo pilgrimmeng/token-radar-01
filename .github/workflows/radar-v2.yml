@@ -1,0 +1,48 @@
+name: Radar v2 smoke checks
+on:
+  push:
+    branches:
+      - work/calibrated-radar-v2-20261118
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+      - name: Check browser JavaScript syntax
+        run: node --check dashboard/app.js
+      - name: TypeScript model smoke tests
+        run: node --test tests/smoke.test.ts
+      - name: Generate synthetic snapshot and verify model
+        run: |
+          node tests/create-fixture.mjs /tmp/radar-synthetic.json
+          node tests/validate-model.ts /tmp/radar-synthetic.json
+      - name: Prepare, capture browser screenshots, and build final dossier
+        run: |
+          node main.ts --prepare --input /tmp/radar-synthetic.json --output out
+          node tools/capture-screenshots.mjs out
+          node main.ts --input /tmp/radar-synthetic.json --output out
+          node -e "const fs=require('fs');const d=JSON.parse(fs.readFileSync('out/dossier.json'));if(!d.images || d.images.length!==3)process.exit(1);console.log('Dossier images:',d.images.length)"
+      - name: Upload synthetic browser captures for visual QA
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: synthetic-radar-views
+          path: screenshots/*.png
+          if-no-files-found: warn
+          retention-days: 1
+      - name: Check no private snapshot or credentials were committed
+        shell: bash
+        run: |
+          test ! -e snapshot.json
+          test ! -e .env
+          test ! -e makefun-keypair.json
